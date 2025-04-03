@@ -2,63 +2,89 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime
+import io
 
-# Load and clean the data
-def load_data():
-    df = pd.read_csv("tuition data.csv")
-    df['Date'] = pd.to_datetime(df['Date'])
-    df['Tuition'] = df['Tuition'].replace('[\$,]', '', regex=True).astype(float)
-    df = df.sort_values('Date')
-    df['Daily Change'] = df['Tuition']
-    return df
+# Monte Carlo multi-year projection app
+st.title("Multi-Year Monte Carlo Financial Projection")
 
-# Simulation function
-def simulate_tuition_growth(df, start_date, num_days, target_tuition, num_simulations=10000):
-    historical_changes = df[df['Date'] >= start_date]['Daily Change'].values
+# User Inputs
+initial_revenue = st.number_input("Initial Monthly Revenue (?)", value=1_000_000.0, step=100_000.0)
+initial_expenses = st.number_input("Initial Monthly Expenses (?)", value=600_000.0, step=100_000.0)
+n_years = st.slider("Projection Period (Years)", 1, 10, 5)
+n_simulations = st.slider("Number of Simulations", 1000, 10000, 5000, step=1000)
 
-    if len(historical_changes) < 2:
-        raise ValueError("Not enough data after the given start date.")
+# Growth assumptions
+mean_rev_growth = st.number_input("Avg Monthly Revenue Growth (%)", value=2.0) / 100
+std_rev_growth = st.number_input("Std Dev of Revenue Growth (%)", value=1.0) / 100
 
-    mean_change = np.mean(historical_changes)
-    std_change = np.std(historical_changes)
+mean_exp_growth = st.number_input("Avg Monthly Expense Growth (%)", value=1.5) / 100
+std_exp_growth = st.number_input("Std Dev of Expense Growth (%)", value=0.7) / 100
 
-    results = []
-    for _ in range(num_simulations):
-        simulated_changes = np.random.normal(mean_change, std_change, num_days)
-        cumulative_total = np.sum(simulated_changes)
-        results.append(cumulative_total)
+# Run simulation
+months = n_years * 12
+simulated_results = []
 
-    results = np.array(results)
-    probability = np.mean(results >= target_tuition)
+for i in range(n_simulations):
+    revenue = initial_revenue
+    expenses = initial_expenses
+    net_income_stream = []
 
-    return results, probability
+    for _ in range(months):
+        rev_growth = np.random.normal(mean_rev_growth, std_rev_growth)
+        exp_growth = np.random.normal(mean_exp_growth, std_exp_growth)
 
-# Streamlit UI
-st.title("Tuition Goal Probability Simulator")
+        revenue *= (1 + rev_growth)
+        expenses *= (1 + exp_growth)
 
-# Inputs
-start_date = st.date_input("Start Date", datetime(2023, 7, 3))
-num_days = st.number_input("Number of Days", min_value=1, value=60)
-target_tuition = st.number_input("Target Tuition (?)", min_value=0.0, value=10000000.0, step=100000.0)
+        net_income = revenue - expenses
+        net_income_stream.append(net_income)
 
-# Run simulation on button click
-if st.button("Run Simulation"):
-    try:
-        df = load_data()
-        results, probability = simulate_tuition_growth(df, pd.to_datetime(start_date), num_days, target_tuition)
+    simulated_results.append(net_income_stream)
 
-        # Show probability
-        st.success(f"Estimated Probability: {probability * 100:.2f}%")
+# Convert to array and compute cumulative income
+simulated_results = np.array(simulated_results)
+cumulative_income = np.cumsum(simulated_results, axis=1)
 
-        # Plot histogram
-        fig, ax = plt.subplots()
-        ax.hist(results, bins=50, alpha=0.7)
-        ax.axvline(target_tuition, color='red', linestyle='dashed', linewidth=2)
-        ax.set_title("Simulated Tuition Outcomes")
-        ax.set_xlabel("Total Tuition After {} Days".format(num_days))
-        ax.set_ylabel("Frequency")
-        st.pyplot(fig)
-    except Exception as e:
-        st.error(f"Error: {e}")
+# Visualization: Sample paths
+st.subheader("Sample Cumulative Net Income Paths")
+fig, ax = plt.subplots()
+for i in range(min(100, n_simulations)):
+    ax.plot(cumulative_income[i], alpha=0.1)
+ax.set_title("Monte Carlo Net Income Forecast")
+ax.set_xlabel("Month")
+ax.set_ylabel("Cumulative Net Income")
+st.pyplot(fig)
 
+# Summary Stats
+st.subheader("Summary Statistics")
+final_values = cumulative_income[:, -1]
+percentiles = np.percentile(final_values, [5, 50, 95])
+st.write(f"5th Percentile: ?{percentiles[0]:,.0f}")
+st.write(f"Median (50th): ?{percentiles[1]:,.0f}")
+st.write(f"95th Percentile: ?{percentiles[2]:,.0f}")
+
+# Histogram
+st.subheader("Distribution of Final Net Income")
+fig2, ax2 = plt.subplots()
+ax2.hist(final_values, bins=50, alpha=0.7)
+ax2.axvline(percentiles[1], color='red', linestyle='dashed', label='Median')
+ax2.set_title("Distribution of Net Income After {} Years".format(n_years))
+ax2.set_xlabel("Net Income")
+ax2.set_ylabel("Frequency")
+ax2.legend()
+st.pyplot(fig2)
+
+# Download Button for Raw Results
+st.subheader("Download Simulation Results")
+df_download = pd.DataFrame(cumulative_income)
+buffer = io.BytesIO()
+df_download.to_csv(buffer, index=False)
+buffer.seek(0)
+st.download_button(
+    label="Download Cumulative Income CSV",
+    data=buffer,
+    file_name="monte_carlo_projection.csv",
+    mime="text/csv"
+)
+
+st.info("To deploy this app, upload it along with a requirements.txt to Streamlit Cloud.")
